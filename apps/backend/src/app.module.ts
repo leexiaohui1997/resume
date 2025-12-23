@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { UserModule } from './user/user.module';
 
 @Module({
   imports: [
@@ -21,10 +22,11 @@ import { AppService } from './app.service';
         synchronize: configService.get<string>('NODE_ENV') !== 'production',
         extra: {
           connectionLimit: 10,
-          acquireTimeout: 60000,
+          connectTimeout: 60000,
         },
       }),
     }),
+    UserModule,
   ],
   controllers: [AppController],
   providers: [AppService],

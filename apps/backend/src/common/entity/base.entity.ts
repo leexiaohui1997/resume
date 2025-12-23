@@ -1,7 +1,7 @@
-import { CreateDateColumn, PrimaryColumn, UpdateDateColumn } from 'typeorm';
+import { CreateDateColumn, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 
 export abstract class BaseEntity {
-  @PrimaryColumn()
+  @PrimaryGeneratedColumn()
   id: number;
 
   @CreateDateColumn({ name: 'create_time' })

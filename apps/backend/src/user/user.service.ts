@@ -1,4 +1,9 @@
-import { ConflictException, Injectable, InternalServerErrorException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { Repository } from 'typeorm';
@@ -7,6 +12,8 @@ import { User } from './entity/user.entity';
 
 @Injectable()
 export class UserService {
+  private readonly logger = new Logger(UserService.name);
+
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>
@@ -48,7 +55,8 @@ export class UserService {
 
     try {
       await this.userRepository.save(user);
-    } catch {
+    } catch (error) {
+      this.logger.error('注册失败', error);
       throw new InternalServerErrorException('注册失败，请稍后重试');
     }
   }
