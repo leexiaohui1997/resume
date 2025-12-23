@@ -3,11 +3,13 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
+  NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { Repository } from 'typeorm';
 import { RegisterDto } from './dto/register.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
 import { User } from './entity/user.entity';
 
 @Injectable()
@@ -63,6 +65,30 @@ export class UserService {
     } catch (error) {
       this.logger.error('注册失败', error);
       throw new InternalServerErrorException('注册失败，请稍后重试');
+    }
+  }
+
+  // 获取用户详细信息
+  async getUserInfo(id: number): Promise<User> {
+    const user = await this.userRepository.findOne({ where: { id } });
+    if (!user) {
+      throw new NotFoundException('用户不存在');
+    }
+    return user;
+  }
+
+  // 更新用户信息
+  async updateUserInfo(id: number, updateUserDto: UpdateUserDto): Promise<User> {
+    const user = await this.getUserInfo(id);
+
+    // 合并更新数据
+    Object.assign(user, updateUserDto);
+
+    try {
+      return await this.userRepository.save(user);
+    } catch (error) {
+      this.logger.error('更新用户信息失败', error);
+      throw new InternalServerErrorException('更新用户信息失败，请稍后重试');
     }
   }
 }

@@ -10,6 +10,12 @@ export class User extends BaseEntity {
   @Column({ select: false })
   password: string;
 
+  @Column({ length: 255, nullable: true })
+  avatarUrl: string;
+
+  @Column({ length: 50, nullable: true })
+  nickname: string;
+
   @OneToMany(() => Token, token => token.user)
   tokens: Token[];
 }
