@@ -33,6 +33,11 @@ export class UserService {
       .getOne();
   }
 
+  // 根据ID查找用户
+  async findById(id: number): Promise<User | null> {
+    return this.userRepository.findOne({ where: { id } });
+  }
+
   // 用户注册
   async register(registerDto: RegisterDto): Promise<void> {
     const { username, password } = registerDto;
