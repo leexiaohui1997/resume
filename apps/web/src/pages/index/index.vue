@@ -2,9 +2,18 @@
   <div class="section">
     <div class="title">你的专业简历制作助手</div>
     <div class="desc">3分钟创建一份专业且美观的简历</div>
-    <el-button type="primary">开始制作简历</el-button>
+    <el-button type="primary" @click="gotoWorkspace">开始制作简历</el-button>
   </div>
 </template>
+
+<script lang="ts" setup>
+import { useRouter } from 'vue-router';
+
+const router = useRouter();
+const gotoWorkspace = () => {
+  router.push({ name: 'workspace-resume' });
+};
+</script>
 
 <style lang="scss" scoped>
 .section {
