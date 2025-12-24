@@ -4,6 +4,7 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { getCorsConfig } from './common/config/cors.config';
 import { AllExceptionsFilter } from './filters/all-exceptions.filter';
 import { TransformInterceptor } from './interceptors/transform.interceptor';
 
@@ -12,6 +13,9 @@ async function bootstrap() {
 
   // 获取配置服务
   const configService = app.get(ConfigService);
+
+  // 配置CORS
+  app.enableCors(getCorsConfig(configService));
 
   // 配置静态文件服务
   const uploadDir = configService.get<string>('UPLOAD_DIR') || './uploads';

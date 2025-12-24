@@ -4,12 +4,18 @@
       <a href="/" class="layout-logo">
         <h1 class="layout-title">RESUME - 简历制作</h1>
       </a>
+
+      <User />
     </div>
     <div class="layout-main">
       <slot />
     </div>
   </div>
 </template>
+
+<script setup lang="tsx">
+import User from './user.vue';
+</script>
 
 <style lang="scss" scoped>
 .layout {
