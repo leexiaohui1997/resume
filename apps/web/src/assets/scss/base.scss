@@ -1,1 +1,15 @@
 $text-color: #333;
+
+$color-primary: #9b50e6;
+
+// Element Plus 主题变量
+$--colors: (
+  'primary': (
+    'base': $color-primary,
+  ),
+);
+
+// 导入 Element Plus 样式变量
+@forward 'element-plus/theme-chalk/src/common/var.scss' with (
+  $colors: $--colors
+);
