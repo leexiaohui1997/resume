@@ -1,6 +1,7 @@
 import { Column, Entity, OneToMany } from 'typeorm';
 import { Token } from '../../auth/entity/token.entity';
 import { BaseEntity } from '../../common/entity/base.entity';
+import { FieldGroup } from '../../field/entity/field-group.entity';
 
 @Entity('users')
 export class User extends BaseEntity {
@@ -18,4 +19,7 @@ export class User extends BaseEntity {
 
   @OneToMany(() => Token, token => token.user)
   tokens: Token[];
+
+  @OneToMany(() => FieldGroup, group => group.user)
+  fieldGroups: FieldGroup[];
 }
