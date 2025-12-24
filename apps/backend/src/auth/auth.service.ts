@@ -1,4 +1,4 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { User } from '../user/entity/user.entity';
 import { UserService } from '../user/user.service';
 import { LoginResponseDto } from './dto/login-response.dto';
@@ -28,13 +28,13 @@ export class AuthService {
       // 1. 查找用户
       const user = await this.userService.findByUsername(username);
       if (!user) {
-        throw new UnauthorizedException('用户名或密码错误');
+        throw new BadRequestException('用户名或密码错误');
       }
 
       // 2. 验证密码
       const isPasswordValid = await this.userService.validatePassword(password, user.password);
       if (!isPasswordValid) {
-        throw new UnauthorizedException('用户名或密码错误');
+        throw new BadRequestException('用户名或密码错误');
       }
 
       // 3. 生成访问令牌和刷新令牌

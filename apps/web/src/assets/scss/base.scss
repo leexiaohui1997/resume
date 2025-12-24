@@ -1,0 +1,25 @@
+$text-color: #303133;
+$text-color-light: #666;
+$text-color-gray: #909399;
+
+$color-primary: #9b50e6;
+
+$border-color-base: #dedede;
+
+$spacing-base: 24px;
+
+$font-size-small: 14px;
+$font-size-base: 16px;
+$font-size-large: 20px;
+
+// Element Plus 主题变量
+$--colors: (
+  'primary': (
+    'base': $color-primary,
+  ),
+);
+
+// 导入 Element Plus 样式变量
+@forward 'element-plus/theme-chalk/src/common/var.scss' with (
+  $colors: $--colors
+);

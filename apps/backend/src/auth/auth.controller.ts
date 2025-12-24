@@ -31,7 +31,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '用户登录' })
   @ApiResponse({ status: 200, description: '登录成功', type: LoginResponseDto })
-  @ApiResponse({ status: 401, description: '用户名或密码错误' })
+  @ApiResponse({ status: 400, description: '用户名或密码错误' })
   async login(@Body() loginDto: LoginDto): Promise<LoginResponseDto> {
     return this.authService.login(loginDto);
   }

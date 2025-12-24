@@ -22,7 +22,7 @@ module.exports = {
     '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
     '@typescript-eslint/explicit-function-return-type': 'off',
     '@typescript-eslint/explicit-module-boundary-types': 'off',
-    '@typescript-eslint/no-explicit-any': 'warn',
+    '@typescript-eslint/no-explicit-any': 'off',
     // Vue规则
     'vue/multi-word-component-names': 'off',
     'vue/no-v-html': 'warn',
@@ -44,8 +44,6 @@ module.exports = {
       parser: 'vue-eslint-parser',
       parserOptions: {
         parser: '@typescript-eslint/parser',
-        project: ['./apps/web/tsconfig.json', './apps/web/tsconfig.*.json'],
-        tsconfigRootDir: __dirname,
         extraFileExtensions: ['.vue'],
       },
     },
