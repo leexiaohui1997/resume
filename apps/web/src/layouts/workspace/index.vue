@@ -1,16 +1,21 @@
 <template>
   <DefaultLayout>
-    <div class="workspace">
-      <div class="workspace-left"></div>
-      <div class="workspace-main">
-        <slot />
-      </div>
-    </div>
+    <el-splitter class="workspace" layout="horizontal">
+      <el-splitter-panel :size="240" :resizable="false" :collapsible="true">
+        <Menu />
+      </el-splitter-panel>
+      <el-splitter-panel class="workspace-main">
+        <div class="workspace-content">
+          <slot />
+        </div>
+      </el-splitter-panel>
+    </el-splitter>
   </DefaultLayout>
 </template>
 
 <script setup lang="ts">
 import DefaultLayout from '../default/index.vue';
+import Menu from './menu.vue';
 </script>
 
 <style lang="scss" scoped>
@@ -18,15 +23,17 @@ import DefaultLayout from '../default/index.vue';
   flex: 1;
   display: flex;
 
-  &-left {
-    width: 240px;
-    border-right: 1px solid $border-color-base;
+  :deep(.el-splitter-bar__dragger-horizontal::before) {
+    width: 1px;
+    background-color: $border-color-base;
   }
 
-  &-main {
-    flex: 1;
-    width: 0;
+  :deep(.workspace-main) {
     background: rgba($color-primary, 0.01);
+  }
+
+  &-content {
+    padding: $spacing-base;
   }
 }
 </style>

@@ -5,5 +5,6 @@ export default defineRoute({
   meta: {
     title: '简历列表',
     layout: LayoutType.Workspace,
+    belongMenu: 'resume',
   },
 });

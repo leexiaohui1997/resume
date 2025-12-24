@@ -6,5 +6,6 @@ declare module 'vue-router' {
     title?: string;
     layout?: LayoutType;
     requiresAuth?: boolean;
+    belongMenu?: string;
   }
 }
