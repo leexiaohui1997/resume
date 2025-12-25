@@ -2,7 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsEnum, IsNumber, IsOptional, IsString, Length, Min } from 'class-validator';
 import { FieldType } from '../enums/field-type.enum';
 
-export class CreateFieldDto {
+export class BatchCreateFieldItemDto {
   @ApiProperty({ description: '字段名称', example: '姓名' })
   @IsString()
   @Length(1, 100, { message: '字段名称长度必须在1到100个字符之间' })
@@ -22,10 +22,12 @@ export class CreateFieldDto {
   @IsNumber()
   groupId?: number;
 
-  @ApiProperty({ description: '父级字段ID', required: false })
+  @ApiProperty({
+    description: '父级字段ID，支持特殊格式如#0表示第一个创建的字段',
+    required: false,
+  })
   @IsOptional()
-  @IsNumber()
-  belongId?: number;
+  belongId?: number | string;
 
   @ApiProperty({ description: '在数组中的位置', required: false })
   @IsOptional()

@@ -38,6 +38,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
       }
     }
 
+    if (status === ResponseCode.SERVER_ERROR) {
+      console.log(exception);
+    }
+
     response.status(status).json({
       code: status,
       message,

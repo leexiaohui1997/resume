@@ -17,9 +17,6 @@ export class FieldDto {
   @ApiProperty({ description: '所属字段组ID', required: false })
   groupId?: number;
 
-  @ApiProperty({ description: '展示顺序', required: false })
-  order?: number;
-
   @ApiProperty({ description: '父级字段ID', required: false })
   belongId?: number;
 

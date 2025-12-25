@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -7,7 +8,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { Between, DataSource, IsNull, Not, Repository } from 'typeorm';
 import { User } from '../user/entity/user.entity';
 import { BatchCreateFieldDto } from './dto/batch-create-field.dto';
 import { BatchUpdateFieldDto, BatchUpdateItemDto } from './dto/batch-update-field.dto';
@@ -69,7 +70,9 @@ export class FieldService {
     userId: number,
     name: string,
     groupId?: number | null,
-    excludeId?: number
+    excludeId?: number,
+    pos?: number | null,
+    belongId?: number | null
   ): Promise<boolean> {
     const queryBuilder = this.fieldRepository
       .createQueryBuilder('field')
@@ -78,9 +81,26 @@ export class FieldService {
 
     if (groupId !== undefined) {
       if (groupId === null) {
-        queryBuilder.andWhere('field.groupId IS NULL');
+        queryBuilder.andWhere('field.group_id IS NULL');
       } else {
-        queryBuilder.andWhere('field.groupId = :groupId', { groupId });
+        queryBuilder.andWhere('field.group_id = :groupId', { groupId });
+      }
+    }
+
+    // 根据belongId和pos的条件进行查询
+    if (belongId === null) {
+      // 如果没有belongId，直接忽略pos，按没有pos的情况进行比对
+      queryBuilder.andWhere('field.belong_id IS NULL');
+      queryBuilder.andWhere('field.pos IS NULL');
+    } else if (belongId !== undefined) {
+      // 如果有belongId
+      queryBuilder.andWhere('field.belong_id = :belongId', { belongId });
+
+      // 根据pos的值进行查询
+      if (pos === null) {
+        queryBuilder.andWhere('field.pos IS NULL');
+      } else if (pos !== undefined) {
+        queryBuilder.andWhere('field.pos = :pos', { pos });
       }
     }
 
@@ -90,6 +110,35 @@ export class FieldService {
 
     const count = await queryBuilder.getCount();
     return count > 0;
+  }
+
+  /**
+   * 检查belongId和pos组合是否唯一
+   * @param userId 用户ID
+   * @param belongId 父级字段ID
+   * @param pos 在数组中的位置
+   * @param excludeId 排除的字段ID（用于更新时检查）
+   * @returns 是否唯一
+   */
+  private async isBelongIdAndPosUnique(
+    userId: number,
+    belongId: number,
+    pos: number,
+    excludeId?: number
+  ): Promise<boolean> {
+    const queryBuilder = this.fieldRepository
+      .createQueryBuilder('field')
+      .where('field.user.id = :userId', { userId })
+      .andWhere('field.belong_id = :belongId', { belongId })
+      .andWhere('field.pos = :pos', { pos });
+
+    // 如果有excludeId，则排除该ID
+    if (excludeId) {
+      queryBuilder.andWhere('field.id != :excludeId', { excludeId });
+    }
+
+    const count = await queryBuilder.getCount();
+    return count === 0;
   }
 
   // 字段组相关方法
@@ -145,6 +194,15 @@ export class FieldService {
     });
   }
 
+  /**
+   * 创建字段组查询构建器
+   */
+  createFieldGroupsQueryBuilder() {
+    return this.fieldGroupRepository
+      .createQueryBuilder('fieldGroup')
+      .leftJoinAndSelect('fieldGroup.user', 'user');
+  }
+
   async updateFieldGroup(
     id: number,
     userId: number,
@@ -174,7 +232,24 @@ export class FieldService {
     const fieldGroup = await this.findFieldGroupById(id, userId);
 
     try {
-      await this.fieldGroupRepository.remove(fieldGroup);
+      // 使用事务确保删除操作的原子性
+      await this.fieldGroupRepository.manager.transaction(async transactionManager => {
+        // 查找该字段组下的所有字段
+        const fields = await transactionManager.find(Field, {
+          where: {
+            group: { id },
+            user: { id: userId },
+          },
+        });
+
+        // 递归删除每个字段及其子字段
+        for (const field of fields) {
+          await this.recursiveDeleteField(transactionManager, field.id, userId);
+        }
+
+        // 删除字段组
+        await transactionManager.remove(fieldGroup);
+      });
     } catch (error) {
       this.logger.error('删除字段组失败', error);
       throw new InternalServerErrorException('删除字段组失败，请稍后重试');
@@ -189,8 +264,9 @@ export class FieldService {
     }
 
     // 验证字段组是否存在且属于当前用户
+    let fieldGroup: FieldGroup | null = null;
     if (createFieldDto.groupId) {
-      const fieldGroup = await this.fieldGroupRepository.findOne({
+      fieldGroup = await this.fieldGroupRepository.findOne({
         where: { id: createFieldDto.groupId, user: { id: userId } },
       });
       if (!fieldGroup) {
@@ -199,29 +275,66 @@ export class FieldService {
     }
 
     // 验证父级字段是否存在且属于当前用户
+    let belongField: Field | null = null;
     if (createFieldDto.belongId) {
-      const parentField = await this.fieldRepository.findOne({
+      belongField = await this.fieldRepository.findOne({
         where: { id: createFieldDto.belongId, user: { id: userId } },
       });
-      if (!parentField) {
+      if (!belongField) {
         throw new NotFoundException('父级字段不存在或无权访问');
       }
     }
 
-    // 检查字段名称在同一字段组下是否已存在
+    // 检查字段名称是否唯一（同一用户同一字段组同一父级字段同一pos下唯一）
     const nameExists = await this.isFieldNameExists(
       userId,
       createFieldDto.name,
-      createFieldDto.groupId || null
+      createFieldDto.groupId || null,
+      undefined, // excludeId
+      createFieldDto.pos || null,
+      createFieldDto.belongId || null
     );
     if (nameExists) {
-      throw new ConflictException('字段名称在同一字段组下已存在');
+      throw new ConflictException('字段名称在当前条件下已存在');
     }
 
-    const field = this.fieldRepository.create({
-      ...createFieldDto,
-      user,
-    });
+    // 只有当belongId和pos都不为null或undefined时，才检查belongId和pos组合的唯一性
+    let existingField: Field | null = null;
+    if (createFieldDto.belongId !== undefined && createFieldDto.pos !== undefined) {
+      const isUnique = await this.isBelongIdAndPosUnique(
+        userId,
+        createFieldDto.belongId,
+        createFieldDto.pos
+      );
+
+      if (!isUnique) {
+        // 查找并删除具有相同belong_id和pos的现有字段
+        existingField = await this.fieldRepository.findOne({
+          where: {
+            user: { id: userId },
+            belong: { id: createFieldDto.belongId },
+            pos: createFieldDto.pos,
+          },
+        });
+
+        if (existingField) {
+          // 使用事务确保删除和创建操作的原子性
+          await this.fieldRepository.manager.transaction(async transactionManager => {
+            // 递归删除该字段及其所有子字段
+            await this.recursiveDeleteField(transactionManager, existingField!.id, userId);
+          });
+        }
+      }
+    }
+
+    const field = new Field();
+    field.name = createFieldDto.name;
+    field.type = createFieldDto.type;
+    field.value = createFieldDto.value ?? null;
+    field.pos = createFieldDto.pos ?? null;
+    field.group = fieldGroup ?? null;
+    field.belong = belongField ?? null;
+    field.user = user;
 
     try {
       return await this.fieldRepository.save(field);
@@ -257,53 +370,122 @@ export class FieldService {
     return this.fieldRepository.find({
       where: whereCondition,
       relations: ['group', 'belong'],
-      order: { order: 'ASC', createTime: 'DESC' },
+      order: { createTime: 'DESC' },
+    });
+  }
+
+  /**
+   * 调整字段位置
+   * @param userId 用户ID
+   * @param fieldId 要调整的字段ID
+   * @param oldPos 旧位置
+   * @param newPos 新位置
+   * @param groupId 字段组ID
+   * @param belongId 父级字段ID
+   */
+  private async adjustFieldPositions(
+    userId: number,
+    fieldId: number,
+    oldPos: number,
+    newPos: number,
+    groupId?: number,
+    belongId?: number
+  ): Promise<void> {
+    // 如果位置没有变化，直接返回
+    if (oldPos === newPos) return;
+
+    // 如果没有belongId，则不进行位置调整
+    if (!belongId) return;
+
+    // 构建查询条件
+    const whereCondition: any = {
+      user: { id: userId },
+      id: Not(fieldId), // 排除当前字段
+    };
+
+    if (groupId) {
+      whereCondition.group = { id: groupId };
+    } else {
+      whereCondition.group = IsNull();
+    }
+
+    if (belongId) {
+      whereCondition.belong = { id: belongId };
+    } else {
+      whereCondition.belong = IsNull();
+    }
+
+    // 确定调整范围和方向
+    let start: number, end: number, adjustment: number;
+
+    if (newPos > oldPos) {
+      // 向后移动
+      start = oldPos;
+      end = newPos;
+      adjustment = -1; // 中间的字段向前移动一位
+    } else {
+      // 向前移动
+      start = newPos;
+      end = oldPos;
+      adjustment = 1; // 中间的字段向后移动一位
+    }
+
+    // 获取需要调整的字段
+    const fieldsToAdjust = await this.fieldRepository.find({
+      where: {
+        ...whereCondition,
+        pos: Between(start, end),
+      },
+    });
+
+    // 使用事务更新字段的pos值
+    await this.fieldRepository.manager.transaction(async transactionManager => {
+      // 更新受影响字段的pos值
+      for (const field of fieldsToAdjust) {
+        // 确保pos不为null
+        if (field.pos !== null) {
+          field.pos += adjustment;
+          await transactionManager.save(field);
+        }
+      }
+
+      // 更新目标字段的pos值
+      const targetField = await this.fieldRepository.findOne({
+        where: { id: fieldId },
+      });
+      if (targetField) {
+        targetField.pos = newPos;
+        await transactionManager.save(targetField);
+      }
     });
   }
 
   async updateField(id: number, userId: number, updateFieldDto: UpdateFieldDto): Promise<Field> {
     const field = await this.findFieldById(id, userId);
 
-    // 如果更新了字段组，验证字段组是否存在且属于当前用户
-    if (updateFieldDto.groupId !== undefined && updateFieldDto.groupId !== field.group?.id) {
-      if (updateFieldDto.groupId) {
-        const fieldGroup = await this.fieldGroupRepository.findOne({
-          where: { id: updateFieldDto.groupId, user: { id: userId } },
-        });
-        if (!fieldGroup) {
-          throw new NotFoundException('字段组不存在或无权访问');
-        }
-      }
+    // 保存原始pos值
+    const oldPos = field.pos || 0;
+
+    // 只更新允许修改的字段：value、pos
+    if (updateFieldDto.value !== undefined) {
+      // 修复类型不匹配：UpdateFieldDto.value是string | undefined，而Field.value是string | null
+      field.value = updateFieldDto.value ?? null;
     }
 
-    // 如果更新了父级字段，验证父级字段是否存在且属于当前用户
-    if (updateFieldDto.belongId !== undefined && updateFieldDto.belongId !== field.belong?.id) {
-      if (updateFieldDto.belongId) {
-        const parentField = await this.fieldRepository.findOne({
-          where: { id: updateFieldDto.belongId, user: { id: userId } },
-        });
-        if (!parentField) {
-          throw new NotFoundException('父级字段不存在或无权访问');
-        }
-      }
-    }
-
-    // 如果更新了名称，检查新名称在同一字段组下是否已存在
-    if (updateFieldDto.name && updateFieldDto.name !== field.name) {
-      const groupId =
-        updateFieldDto.groupId !== undefined ? updateFieldDto.groupId : field.group?.id;
-      const nameExists = await this.isFieldNameExists(
+    // 如果pos有变化，调整相关字段的位置
+    if (updateFieldDto.pos !== undefined && updateFieldDto.pos !== oldPos) {
+      await this.adjustFieldPositions(
         userId,
-        updateFieldDto.name,
-        groupId || null,
-        id
+        id,
+        oldPos,
+        updateFieldDto.pos,
+        field.group?.id,
+        field.belong?.id
       );
-      if (nameExists) {
-        throw new ConflictException('字段名称在同一字段组下已存在');
-      }
-    }
 
-    Object.assign(field, updateFieldDto);
+      // 更新当前字段的pos
+      field.pos = updateFieldDto.pos;
+    }
 
     try {
       return await this.fieldRepository.save(field);
@@ -313,11 +495,50 @@ export class FieldService {
     }
   }
 
+  /**
+   * 递归删除字段及其所有子字段
+   * @param transactionManager 事务管理器
+   * @param id 字段ID
+   * @param userId 用户ID
+   */
+  private async recursiveDeleteField(
+    transactionManager: any,
+    id: number,
+    userId: number
+  ): Promise<void> {
+    // 查找所有belong_id为该字段ID的字段
+    const childFields = await transactionManager.find(Field, {
+      where: {
+        belong: { id },
+        user: { id: userId },
+      },
+    });
+
+    // 递归删除所有子字段
+    for (const childField of childFields) {
+      await this.recursiveDeleteField(transactionManager, childField.id, userId);
+    }
+
+    // 删除当前字段
+    const fieldToDelete = await transactionManager.findOne(Field, {
+      where: { id },
+    });
+
+    if (fieldToDelete) {
+      await transactionManager.remove(fieldToDelete);
+    }
+  }
+
   async deleteField(id: number, userId: number): Promise<void> {
-    const field = await this.findFieldById(id, userId);
+    // 验证字段是否存在
+    await this.findFieldById(id, userId);
 
     try {
-      await this.fieldRepository.remove(field);
+      // 使用事务确保删除操作的原子性
+      await this.fieldRepository.manager.transaction(async transactionManager => {
+        // 递归删除字段及其所有子字段
+        await this.recursiveDeleteField(transactionManager, id, userId);
+      });
     } catch (error) {
       this.logger.error('删除字段失败', error);
       throw new InternalServerErrorException('删除字段失败，请稍后重试');
@@ -334,76 +555,158 @@ export class FieldService {
       throw new NotFoundException('用户不存在');
     }
 
-    // 验证所有字段组和父级字段是否存在且属于当前用户
+    // 验证字段组是否存在且属于当前用户
     const groupIds = batchCreateFieldDto.fields
       .filter(field => field.groupId)
       .map(field => field.groupId);
 
-    const belongIds = batchCreateFieldDto.fields
-      .filter(field => field.belongId)
-      .map(field => field.belongId);
-
     if (groupIds.length > 0) {
+      // 去重，避免重复字段组ID导致的问题
+      const uniqueGroupIds = [...new Set(groupIds)];
       const fieldGroups = await this.fieldGroupRepository.find({
-        where: groupIds.map(id => ({ id, user: { id: userId } })),
+        where: uniqueGroupIds.map(id => ({ id, user: { id: userId } })),
       });
-      if (fieldGroups.length !== groupIds.length) {
+      if (fieldGroups.length !== uniqueGroupIds.length) {
         throw new NotFoundException('部分字段组不存在或无权访问');
       }
     }
 
-    if (belongIds.length > 0) {
-      const parentFields = await this.fieldRepository.find({
-        where: belongIds.map(id => ({ id, user: { id: userId } })),
-      });
-      if (parentFields.length !== belongIds.length) {
-        throw new NotFoundException('部分父级字段不存在或无权访问');
-      }
-    }
-
-    // 检查批量创建的字段名称在同一字段组下是否已存在
+    // 检查批量创建的字段名称在同一字段组、同一belongId和pos下是否已存在
     for (const fieldData of batchCreateFieldDto.fields) {
+      if (typeof fieldData.belongId === 'string') {
+        continue;
+      }
+
       const nameExists = await this.isFieldNameExists(
         userId,
         fieldData.name,
-        fieldData.groupId || null
+        fieldData.groupId || null,
+        undefined, // excludeId
+        fieldData.pos || null,
+        fieldData.belongId || null
       );
       if (nameExists) {
-        throw new ConflictException(`字段名称"${fieldData.name}"在同一字段组下已存在`);
+        throw new ConflictException(`字段名称"${fieldData.name}"在当前条件下已存在`);
       }
     }
 
     // 检查批量创建的字段中是否有重复名称
-    const fieldsByGroup = new Map<number | null, Map<string, boolean>>();
+    // 使用复合键：groupId-belongId-pos作为分组依据
+    const fieldsByCondition = new Map<string, Map<string, boolean>>();
     for (const fieldData of batchCreateFieldDto.fields) {
-      const groupId = fieldData.groupId || null;
-      if (!fieldsByGroup.has(groupId)) {
-        fieldsByGroup.set(groupId, new Map());
+      const groupId = fieldData.groupId ?? null;
+      const belongId = fieldData.belongId ?? null;
+      const pos = fieldData.pos ?? null;
+
+      // 创建复合键：groupId-belongId-pos
+      const key = `${groupId}-${belongId}-${pos}`;
+
+      if (!fieldsByCondition.has(key)) {
+        fieldsByCondition.set(key, new Map());
       }
-      const groupFields = fieldsByGroup.get(groupId)!;
-      if (groupFields.has(fieldData.name)) {
+
+      const conditionFields = fieldsByCondition.get(key)!;
+      if (conditionFields.has(fieldData.name)) {
         throw new ConflictException(
-          `批量创建的字段中，字段名称"${fieldData.name}"在同一字段组下重复`
+          `批量创建的字段中，字段名称"${fieldData.name}"在相同条件下重复`
         );
       }
-      groupFields.set(fieldData.name, true);
+      conditionFields.set(fieldData.name, true);
+    }
+
+    // 验证特殊格式的belongId
+    for (let i = 0; i < batchCreateFieldDto.fields.length; i++) {
+      const fieldData = batchCreateFieldDto.fields[i];
+      if (
+        fieldData.belongId &&
+        typeof fieldData.belongId === 'string' &&
+        fieldData.belongId.startsWith('#')
+      ) {
+        const index = parseInt(fieldData.belongId.substring(1));
+        if (isNaN(index) || index >= i) {
+          throw new BadRequestException(
+            `字段"${fieldData.name}"的belongId "${fieldData.belongId}" 无效，引用的下标必须小于当前字段的位置`
+          );
+        }
+      } else if (fieldData.belongId && typeof fieldData.belongId === 'number') {
+        // 验证普通数字类型的belongId是否存在且属于当前用户
+        const parentField = await this.fieldRepository.findOne({
+          where: { id: fieldData.belongId, user: { id: userId } },
+        });
+        if (!parentField) {
+          throw new NotFoundException(
+            `字段"${fieldData.name}"的父级字段ID ${fieldData.belongId} 不存在或无权访问`
+          );
+        }
+      }
     }
 
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
+    const createdFields: Field[] = [];
 
     try {
-      const fields = batchCreateFieldDto.fields.map(fieldData =>
-        queryRunner.manager.create(Field, {
-          ...fieldData,
-          user,
-        })
-      );
+      // 按照fields数组的顺序依次创建字段
+      for (let i = 0; i < batchCreateFieldDto.fields.length; i++) {
+        const fieldData = batchCreateFieldDto.fields[i];
 
-      const savedFields = await queryRunner.manager.save(fields);
+        // 解析belongId
+        let belongField: Field | null = null;
+        if (fieldData.belongId) {
+          if (typeof fieldData.belongId === 'string' && fieldData.belongId.startsWith('#')) {
+            // 特殊格式belongId
+            const index = parseInt(fieldData.belongId.substring(1));
+            belongField = createdFields[index];
+          } else if (typeof fieldData.belongId === 'number') {
+            // 普通数字belongId
+            belongField = await queryRunner.manager.findOne(Field, {
+              where: { id: fieldData.belongId, user: { id: userId } },
+            });
+          }
+        }
+
+        // 获取字段组
+        let fieldGroup: FieldGroup | null = null;
+        if (fieldData.groupId) {
+          fieldGroup = await queryRunner.manager.findOne(FieldGroup, {
+            where: { id: fieldData.groupId, user: { id: userId } },
+          });
+        }
+
+        // 检查是否存在相同belong_id和pos的字段，如果存在则先删除
+        if (belongField && fieldData.pos !== undefined && fieldData.pos !== null) {
+          const existingField = await queryRunner.manager.findOne(Field, {
+            where: {
+              user: { id: userId },
+              belong: { id: belongField.id },
+              pos: fieldData.pos,
+            },
+          });
+
+          if (existingField) {
+            // 递归删除该字段及其所有子字段
+            await this.recursiveDeleteField(queryRunner.manager, existingField.id, userId);
+          }
+        }
+
+        // 创建字段
+        const newField = queryRunner.manager.create(Field, {
+          name: fieldData.name,
+          type: fieldData.type,
+          value: fieldData.value ?? null,
+          pos: fieldData.pos ?? null,
+          group: fieldGroup,
+          belong: belongField,
+          user,
+        });
+
+        const savedField = await queryRunner.manager.save(newField);
+        createdFields.push(savedField);
+      }
+
       await queryRunner.commitTransaction();
-      return savedFields;
+      return createdFields;
     } catch (error) {
       await queryRunner.rollbackTransaction();
       this.logger.error('批量创建字段失败', error);
@@ -434,44 +737,19 @@ export class FieldService {
       updatesWithFields.push({ update, field });
     }
 
-    // 检查批量更新的字段名称在同一字段组下是否已存在
+    // 按groupId和belongId分组
+    const updatesByGroup = new Map<string, Array<{ update: BatchUpdateItemDto; field: Field }>>();
+
     for (const { update, field } of updatesWithFields) {
-      if (update.data.name && update.data.name !== field.name) {
-        const groupId = update.data.groupId !== undefined ? update.data.groupId : field.group?.id;
-        const nameExists = await this.isFieldNameExists(
-          userId,
-          update.data.name,
-          groupId || null,
-          update.id
-        );
-        if (nameExists) {
-          throw new ConflictException(`字段名称"${update.data.name}"在同一字段组下已存在`);
-        }
+      const key = `${field.group?.id || 'null'}-${field.belong?.id || 'null'}`;
+
+      if (!updatesByGroup.has(key)) {
+        updatesByGroup.set(key, []);
       }
+      updatesByGroup.get(key)?.push({ update, field });
     }
 
-    // 检查批量更新的字段中是否有重复名称
-    const fieldsByGroup = new Map<number | null, Map<string, number>>();
-    for (const { update, field } of updatesWithFields) {
-      if (update.data.name) {
-        const groupId = update.data.groupId !== undefined ? update.data.groupId : field.group?.id;
-        if (groupId !== undefined) {
-          if (!fieldsByGroup.has(groupId)) {
-            fieldsByGroup.set(groupId, new Map());
-          }
-          const groupFields = fieldsByGroup.get(groupId)!;
-          if (
-            groupFields.has(update.data.name) &&
-            groupFields.get(update.data.name) !== update.id
-          ) {
-            throw new ConflictException(
-              `批量更新的字段中，字段名称"${update.data.name}"在同一字段组下重复`
-            );
-          }
-          groupFields.set(update.data.name, update.id);
-        }
-      }
-    }
+    // 移除字段名称检查，因为名称不再允许修改
 
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
@@ -480,34 +758,81 @@ export class FieldService {
     try {
       const updatedFields: Field[] = [];
 
-      for (const { update, field } of updatesWithFields) {
-        // 如果更新了字段组，验证字段组是否存在且属于当前用户
-        if (update.data.groupId !== undefined && update.data.groupId !== field.group?.id) {
-          if (update.data.groupId) {
-            const fieldGroup = await queryRunner.manager.findOne(FieldGroup, {
-              where: { id: update.data.groupId, user: { id: userId } },
-            });
-            if (!fieldGroup) {
-              throw new NotFoundException(`ID为${update.data.groupId}的字段组不存在或无权访问`);
+      // 处理每个分组的更新
+      for (const [groupKey, groupUpdates] of updatesByGroup) {
+        // 先处理pos变更
+        const posUpdates = groupUpdates.filter(({ update }) => update.data.pos !== undefined);
+
+        if (posUpdates.length > 0) {
+          // 按新pos排序，从后往前更新，避免冲突
+          posUpdates.sort((a, b) => (b.update.data.pos || 0) - (a.update.data.pos || 0));
+
+          for (const { update, field } of posUpdates) {
+            const oldPos = field.pos || 0;
+            const newPos = update.data.pos || 0;
+
+            if (oldPos !== newPos) {
+              // 获取该组所有字段
+              const [groupIdStr, belongIdStr] = groupKey.split('-');
+              const groupId = groupIdStr === 'null' ? undefined : parseInt(groupIdStr);
+              const belongId = belongIdStr === 'null' ? undefined : parseInt(belongIdStr);
+
+              // 如果没有belongId，则不进行位置调整，只更新当前字段
+              if (!belongId) {
+                field.pos = newPos;
+                await queryRunner.manager.save(field);
+                continue;
+              }
+
+              // 调整位置
+              let start: number, end: number, adjustment: number;
+
+              if (newPos > oldPos) {
+                start = oldPos;
+                end = newPos;
+                adjustment = -1;
+              } else {
+                start = newPos;
+                end = oldPos;
+                adjustment = 1;
+              }
+
+              // 获取需要调整的字段
+              const fieldsToAdjust = await queryRunner.manager.find(Field, {
+                where: {
+                  user: { id: userId },
+                  id: Not(field.id),
+                  ...(groupId ? { group: { id: groupId } } : { group: IsNull() }),
+                  ...(belongId ? { belong: { id: belongId } } : { belong: IsNull() }),
+                  pos: Between(start, end),
+                },
+              });
+
+              // 调整中间字段的位置
+              for (const fieldToAdjust of fieldsToAdjust) {
+                // 确保pos不为null
+                if (fieldToAdjust.pos !== null) {
+                  fieldToAdjust.pos += adjustment;
+                  await queryRunner.manager.save(fieldToAdjust);
+                }
+              }
+
+              // 更新目标字段
+              field.pos = newPos;
+              await queryRunner.manager.save(field);
             }
           }
         }
 
-        // 如果更新了父级字段，验证父级字段是否存在且属于当前用户
-        if (update.data.belongId !== undefined && update.data.belongId !== field.belong?.id) {
-          if (update.data.belongId) {
-            const parentField = await queryRunner.manager.findOne(Field, {
-              where: { id: update.data.belongId, user: { id: userId } },
-            });
-            if (!parentField) {
-              throw new NotFoundException(`ID为${update.data.belongId}的父级字段不存在或无权访问`);
-            }
-          }
-        }
+        // 处理其他更新（如value）
+        const otherUpdates = groupUpdates.filter(({ update }) => update.data.value !== undefined);
 
-        Object.assign(field, update.data);
-        const savedField = await queryRunner.manager.save(field);
-        updatedFields.push(savedField);
+        for (const { update, field } of otherUpdates) {
+          // 修复类型不匹配：UpdateFieldDto.value是string | undefined，而Field.value是string | null
+          field.value = update.data.value ?? null;
+          const savedField = await queryRunner.manager.save(field);
+          updatedFields.push(savedField);
+        }
       }
 
       await queryRunner.commitTransaction();
